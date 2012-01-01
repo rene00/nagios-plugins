@@ -1,0 +1,102 @@
+#!/usr/bin/perl -w
+# Plugin to check output of asterisk command.
+
+use strict;
+use File::Basename;
+use Getopt::Std;
+use Nagios::Plugin;
+
+$|=1;
+
+my $VERSION = '0.1';
+my %options = ();
+my $bin_asterisk = '/usr/sbin/asterisk';
+my $process = 'asterisk';
+my $count = 0;
+my (@warning,@critical,$errors_only);
+my ($asterisk_cmd,$search);
+
+getopts("a:s:w:c:",\%options);
+
+sub usage {
+    print <<EOF;
+
+usage: $0  -a [asterisk command] -s [search] -w [warning] -c [critical]
+example: $0 -a 'sip show peers' -s '^route\\s*77\\.75\\.1\\.71' -w 0,2 -c 0,3
+
+Return CRITICAL if
+o the asterisk command 'sip show peers' shows '^route\\s*77\\.75\\.1\\.71' 0 or >=3 times.
+
+Return WARNING if
+o the asterisk command 'sip show peers' shows '^route\\s*77\\.75\\.1\\.71' 0 or >=2 times.
+
+* Tue Jul 03 2007 Rene Cunningham <rene\@compounddata.com>
+
+EOF
+}
+
+if(defined $options{a}) {
+    $asterisk_cmd = $options{a};
+} else {
+    &usage;
+    exit(0);
+}
+
+if(defined $options{s}) {
+    $search = $options{s};
+} else {
+    &usage;
+    exit(0);
+}
+
+if(defined $options{w}) {
+    @warning = split(',',$options{w});
+} else {
+    &usage;
+    exit(0);
+}
+
+if(defined $options{c}) {
+    @critical = split(',',$options{c});
+} else {
+    &usage;
+    exit(0);
+}
+
+my @SPEC = (
+  "errors|e" => [ \$errors_only,
+  q(-e, --errors-only
+   Display only errors) ],
+);
+
+# Exit with an error if we're not on Linux
+&exit("UNKNOWN", "only works on Linux") unless $^O eq 'linux';
+
+# exit if cant find /usr/sbin/asterisk
+&exit("UNKNOWN", "cant find $bin_asterisk") if not -x $bin_asterisk;
+
+open(PIPE,"sudo $bin_asterisk -rx \'$asterisk_cmd\' 2>&1|") or
+	&exit("CRITICAL","Failed to run \'$bin_asterisk -rx  $asterisk_cmd\' : $!\n");
+
+while (my $line = <PIPE>) {
+    chomp($line);
+    if($line =~ /$search/) {
+	$count++;
+    }
+
+}
+close(PIPE);
+
+if($count <= $critical[0]) {
+    &exit("CRITICAL","\'$search\' found $count or less times in asterisk command \'$asterisk_cmd\' (<= $critical[0])\n");
+} elsif($count <= $warning[0]) {
+    &exit("WARNING","\'$search\' found $count or less times in asterisk command \'$asterisk_cmd\' (<= $warning[0])\n");
+} 
+
+if($count >= $critical[1]) {
+    &exit("CRITICAL","\'$search\' found $count or more times in asterisk command \'$asterisk_cmd\' (>= $critical[1])\n");
+} elsif($count >= $warning[1]) {
+    &exit("WARNING","\'$search\' found $count or more times in asterisk command \'$asterisk_cmd\' (>= $warning[1])\n");
+} else {
+    &exit("OK","\'$search\' found $count time(s) in asterisk command \'$asterisk_cmd\'\n");
+}
