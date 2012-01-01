@@ -1,0 +1,68 @@
+#!/usr/bin/perl -w
+
+use strict;
+use File::Basename;
+use Nagios::Plugin;
+
+my $np = Nagios::Plugin->new(version    => '0.1',
+                            usage       => 'usage: $0 -m <mount point>
+example: $0 -m /mnt/nfs/data
+
+Return CRITICAL if
+o If /mnt/nfs/data is not mounted as a NFS share
+
+Notes:
+o this check uses df -T to determine mount type
+');
+
+my %options;
+my $critical;
+my $command;
+my $errors_only;
+my ($filesystem);
+my $found_filesystem = '0';
+
+$np->add_arg(
+    spec => 'mount_point|m=s',
+    help=> '-m, --mount_point=MOUNT_POINT',
+    required => 1,
+);
+
+$np->getopts;
+
+my $mount_point = $np->opts->mount_point;
+
+my @SPEC = (
+  "errors|e" => [ \$errors_only,
+  q(-e, --errors-only
+   Display only errors) ],
+);
+
+# Exit with an error if we're not on Linux
+$np->nagios_exit("UNKNOWN", "only works on Linux") unless $^O eq 'linux';
+
+$command = "df -T $mount_point 2>/dev/null | tail -n1";
+
+open(PIPE,"$command|") or
+    die "Cant run $command : $!\n";
+
+my @line;
+
+while(my $line = <PIPE>) {
+    chomp($line);
+    @line = split(/\s+/,$line);
+    if($line[1] =~ /^nfs/) {
+	chdir $mount_point;
+	my $mtime = (stat('.'))[9];
+	$found_filesystem = '1' if $mtime > 1;
+    }
+}
+
+close(PIPE) or
+    die "Cant close $command : $!\n";
+
+if($found_filesystem eq 1) {
+    $np->nagios_exit("OK","$mount_point mounted as NFS");
+} else {
+    $np->nagios_exit("CRITICAL","$mount_point not mounted as NFS");
+}
