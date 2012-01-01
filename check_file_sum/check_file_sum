@@ -1,0 +1,84 @@
+#!/usr/bin/perl -w
+
+use strict;
+use File::Basename;
+use Nagios::Plugin;
+
+$|=1;
+
+my $VERSION = '0.1';
+my $bin_md5sum = '/usr/bin/md5sum';
+my $bin_sha1sum = '/usr/bin/sha1sum';
+my ($expected_sum, $bin_sum, $file_sum);
+
+my $np = Nagios::Plugin->new(
+    version => '0.1',
+    usage => "%s  -T [sumtype] -f [file] -s [expect file sum]",
+    extra => "
+example: $0 -T md5sum -f /etc/passwd -s 92db6eababda1fe13e16be2ba7a590b7
+
+Return CRITICAL if
+o expected file sum does not match the actual sum of the file
+
+Notes:
+o sumtypes supported are md5sum and sha1sum
+o if no sumtype is specified, default to md5sum
+
+* Wed Jun 27 2007 Rene Cunningham <rene\@compounddata.com>
+"
+
+);
+
+$np->add_arg(
+    spec => 'type|T=s',
+    help => '-T, --type=TYPE',
+    required => 1,
+);
+
+$np->add_arg(
+    spec => 'file|f=s',
+    help => '-f, --file=FILE',
+    required => 1,
+);
+
+$np->add_arg(
+    spec => 'sum|s=s',
+    help => '-s, --sum=SUM',
+    required => 1,
+);
+
+$np->getopts;
+
+# Exit with an error if we're not on Linux
+$np->nagios_exit("UNKNOWN", "only works on Linux") unless $^O eq 'linux';
+
+# exit if cant find file
+$np->nagios_exit("UNKNOWN", "cant find ".scalar($np-opts->file)) if not -f $np->opts->file;
+
+# exit if cant find sum binaries
+$np->nagios_exit("UNKNOWN", "cant find $bin_md5sum") if not -x $bin_md5sum;
+$np->nagios_exit("UNKNOWN", "cant find $bin_sha1sum") if not -x $bin_sha1sum;
+
+if(scalar($np->opts->type) eq 'md5sum') {
+    $bin_sum = $bin_md5sum;
+} elsif($np->opts->type eq 'sha1sum') {
+    $bin_sum = $bin_sha1sum;
+} else {
+    $np->nagios_exit("UNKNOWN", "choose md5sum or sha1sum for type");
+}
+
+open(PIPE,"$bin_sum ".scalar($np->opts->file)." 2>&1|") or
+	$np->nagios_exit("CRITICAL","Failed to run $bin_sum command : $!\n");
+
+while (my $line = <PIPE>) {
+    chomp($line);
+    $file_sum = (split /\s/ , $line)[0];
+}
+
+close(PIPE);
+
+if ($file_sum ne $np->opts->sum) {
+    $np->nagios_exit("CRITICAL", scalar($np->opts->file)." does not match ".scalar($np->opts->type)." of ".$np->opts->sum." [$file_sum]\n");
+} else {
+    $np->nagios_exit("OK", scalar($np->opts->file)." matches ".scalar($np->opts->type)." sum of $file_sum\n");
+}
