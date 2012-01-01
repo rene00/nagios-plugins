@@ -17,3 +17,7 @@ check_nfs_mounted_export
 check_mythtv_recordings
     what: checks that a minimum number of recordings is occuring on a mythtv server using mythweb
     how: check_mythtv_recordings -w 2 -c 1 http://mythtv-server.example.com/mythweb/status
+
+check_oracle
+    what: checks free table & datafile space in oracle. 
+    how: check_oracle -t tablespace -f -p -w 15 -c 10 

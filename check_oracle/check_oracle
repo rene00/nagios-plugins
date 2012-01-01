@@ -1,0 +1,436 @@
+#!/usr/bin/perl -w
+# Check various parts of the Oracle database
+# o free tablespace
+# o free datafile space
+#
+# TODO
+# o check cache hit ratio
+# o check archive mode
+# o check tablespace usage
+# o remove database connect info from code and offer 
+# it via getopts.
+#* Mon Jul 23 2007 Rene Cunningham <rene@compounddata.com>
+
+use strict;
+use File::Basename;
+use Getopt::Std;
+
+
+BEGIN {
+    use lib '/usr/lib/nagios/plugins';
+    use Nagios::Plugin;
+
+    # set oracle environment variables
+    $ENV{ORACLE_HOME} 		= '/usr/lib/oracle/10.2.0.3/client';
+    $ENV{ORACLE_SID}		= 'stage';
+    $ENV{LD_LIBRARY_PATH}	= '/usr/lib/oracle/10.2.0.3/client/lib/';
+}
+
+sub usage {
+    print <<EOF;
+usage: $0 [-t <TYPE>] [-f|-u] [-p|-m] -w <value> -c <value>
+example: $0 -t tablespace -f -p -w 15 -c 10 
+
+Return CRITICAL if
+o Any oracle tablespace is 10% free
+
+Return WARNING if
+o Any oracle tablespace is 15% free
+
+Notes:
+o warning and critical values are in megabytes
+o -p for percent
+o -m for megabyte units
+o if you dont specify -p or -m, megabytes will be the unit. 
+o type can be tablespace, datafilespace.
+
+* Fri Jul 20 2007 Rene Cunningham <rene\@compounddata.com>
+EOF
+
+}
+
+my $VERSION = '0.1';
+my %options = ();
+my $errors_only;
+my $dbh;
+my (@critical,@warning);
+my ($tused,$tfree);
+my ($warning,$critical);
+my ($used,$free);
+my ($megabyte_use,$percent_use);
+my $type;
+
+getopts("t:w:c:fupm",\%options);
+
+if(defined $options{t}) {
+    $type = $options{t};
+} else {
+    usage() && exit(0);
+}
+
+if(defined $options{u}) {
+    $tused = 1;
+    $tfree = 0;
+} elsif (defined $options{f}) {
+    $tused = 0;
+    $tfree = 1;
+} else {
+    &usage;
+    exit(0);
+}
+
+if(defined $options{p}) {
+    $percent_use = 1;
+    $megabyte_use = 0;
+}
+
+if(defined $options{m}) {
+    $percent_use = 0;
+    $megabyte_use = 1;
+} elsif (not defined $options{p}) {
+    &usage;
+    exit(0);
+}
+
+if(defined $options{w}) {
+    $warning = $options{w};
+} else {
+    &usage;
+    exit(0);
+}
+
+if(defined $options{c}) {
+    $critical = $options{c};
+} else {
+    &usage;
+    exit(0);
+}
+
+
+my @SPEC = (
+  "errors|e" => [ \$errors_only,
+  q(-e, --errors-only
+   Display only errors) ],
+);
+
+
+
+sub dbconnect () {
+    use DBI;
+    my $oracle_username = 'ORACLE_USERNAME';
+    my $oracle_password = 'ORACLE_PASSWORD';
+    my $oracle_sid = 'stage';
+    my $dsn = "dbi:Oracle:".$oracle_sid;
+
+    $dbh = DBI->connect ("$dsn",
+    			    "$oracle_username",
+    			    "$oracle_password",
+    			    { RaiseError => 1, AutoCommit => 0 }
+    			    ) or die "Cant connect to Oracle Database of SID $oracle_sid : $!\n";
+}
+
+sub dbdisconnect () {
+    $dbh->disconnect;
+}
+
+sub check_datafilespace () {
+
+    my $sql = qq{
+	    SELECT name, total_mb,
+		FREE_MB
+		FROM
+		v\$asm_diskgroup
+	    };
+    my $sth = $dbh->prepare($sql);
+    my ($datafile_name,$total_size,$total_used);
+    my ($total_free,$percent_used);
+    my %data = ();
+    
+    $sth->execute();
+
+    $sth->bind_columns(undef,\$datafile_name,\$total_size,\$total_free);
+
+
+    while($sth->fetch()) {
+
+	# DEBUG
+	#print "Object: $datafile_name,$total_size,$total_free\n";
+
+	# populate %data;
+	$data{datafile_name} = $datafile_name;
+	$data{$datafile_name}{total_size} = $total_size;
+	$data{$datafile_name}{total_used} = $total_size - $total_free;
+	$data{$datafile_name}{total_free} = $total_free;
+	$data{$datafile_name}{percent_used} = ($total_size - $total_free) / $total_size * 100;
+    }
+
+    $sth->finish();
+    dbdisconnect;
+
+    my @critical_datafiles;
+    my ($global_critical,$global_warning,$global_info_string,$free_string);
+
+    foreach my $key (sort(keys(%data))) {
+
+	if(ref($data{$key})) {
+
+	    # work out values and round off
+	    my $total_used_percent 	= int($data{$key}{percent_used} + .5);
+	    my $total_free_percent 	= 100 - $total_used_percent;
+	    my $total_used_mb		= int($data{$key}{total_used} + .5);
+	    my $total_free_mb		= int($data{$key}{total_free} + .5);
+	    my $total_size 		= int($data{$key}{total_size} + .5);
+	    my $critical_found 		= 0;
+	    my $warning_found 		= 0;
+
+	    for my $key2 (sort(keys(%{$data{$key}}))) {
+
+		if($key2 eq 'total_free') {
+		    if ($tfree eq 1) {
+			if ($percent_use eq 1) {
+		    	    $free_string = $total_free_percent."% free";
+			    if ($total_free_percent <= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_free_percent <= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			} else {
+		    	    $free_string = $total_free_mb."MB free";
+			    if ($total_free_mb <= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_free_mb <= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			}
+		    } elsif ($tused eq 1) {
+			if ($percent_use eq 1) {
+		    	    $free_string = $total_used_percent."% used";
+			    if ($total_used_percent >= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_used_percent >= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			} else {
+		    	    $free_string = $total_free_mb."MB used";
+			    if ($total_free_mb >= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_free_mb >= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			}
+		    }
+		} 
+
+		# create an gloabl information string that we can use for
+		# when nagios data will go into cacti
+		# once we have finished processing the last element
+
+		# total_used is the last element that is sorted through
+		# if we have found a critical error, exit with nagios
+		# status code here
+		if($key2 eq 'total_used') {
+		    my $status;
+
+		    if ($critical_found eq 1) {
+			$status = 'CRITICAL';
+		    } elsif ($warning_found eq 1) {
+			$status = 'WARNING';
+		    } else {
+			$status = 'OK';
+		    }
+
+		    $global_info_string = $global_info_string."\n$key tablespace $status [";
+		    $global_info_string = $global_info_string.$total_free_mb."MB(free) - ";
+		    $global_info_string = $global_info_string.$total_used_mb."MB(used) - ";
+		    $global_info_string = $global_info_string.$total_size."MB(total)]";
+		    $global_info_string = $global_info_string." ".$free_string;
+		}
+
+	    }
+	}
+    }
+
+    if($global_critical) {
+	&exit("CRITICAL","$global_info_string");
+    } elsif ($global_warning) {
+	&exit("WARNING","$global_info_string");
+    } else {
+	&exit("OK","$global_info_string");
+    }
+
+}
+
+sub check_tablespace () {
+
+    my $sql = qq{
+	    SELECT dfs.tablespace_name, ddf.total_size,
+		ddf.total_size - dfs.total_free TOTAL_USED,
+		dfs.total_free,
+		(ddf.total_size-dfs.total_free)/ddf.total_size * 100 CAP,
+		dfs.total_chunks, dfs.largest_chunk
+	    FROM (
+	      SELECT a.tablespace_name,
+	      SUM(a.bytes)/1024/1024 TOTAL_FREE,
+	      COUNT(a.bytes) TOTAL_CHUNKS,
+	      MAX(a.bytes)/1024/1024 LARGEST_CHUNK
+	      FROM dba_free_space a
+	      GROUP BY a.tablespace_name) dfs,
+	    (
+	      SELECT b.tablespace_name,
+	      SUM(b.bytes)/1024/1024 TOTAL_SIZE
+	      FROM dba_data_files b
+	      GROUP BY b.tablespace_name) ddf
+	    WHERE dfs.tablespace_name = ddf.tablespace_name
+	    ORDER BY dfs.tablespace_name
+		};
+    
+    my $sth = $dbh->prepare($sql);
+    my ($tablespace_name,$total_size,$total_used);
+    my ($total_free,$cap,$total_chunks,$largest_chunk);
+    my %data = ();
+
+    $sth->execute();
+    $sth->bind_columns(undef,\$tablespace_name,\$total_size,\$total_used,\$total_free,\$cap,\$total_chunks,\$largest_chunk);
+
+
+    while($sth->fetch()) {
+	# round $cap	
+	$cap = int($cap + .5);
+
+	# DEBUG
+	#print "Object: $tablespace_name $total_size $total_used $total_free $cap $total_chunks $largest_chunk\n";
+	
+	# populate %data 
+	$data{tablespace_name} = $tablespace_name;
+	$data{$tablespace_name}{total_size} = $total_size;
+	$data{$tablespace_name}{total_used} = $total_used;
+	$data{$tablespace_name}{total_free} = $total_free;
+	$data{$tablespace_name}{cap} = $cap;
+	$data{$tablespace_name}{total_chunks} = $total_chunks;
+	$data{$tablespace_name}{largest_chunk} = $largest_chunk;
+    }
+
+    $sth->finish();
+    dbdisconnect;
+
+    my @critical_tablespaces;
+    my ($global_critical,$global_warning,$global_info_string,$free_string);
+
+    foreach my $key (sort(keys(%data))) {
+
+	if(ref($data{$key})) {
+
+	    # work out values and round off
+	    my $total_used_percent 	= $data{$key}{cap};
+	    my $total_free_percent 	= 100 - $total_used_percent;
+	    my $total_used_mb		= int($data{$key}{total_used} + .5);
+	    my $total_free_mb		= int($data{$key}{total_free} + .5);
+	    my $total_size 		= int($data{$key}{total_size} + .5);
+	    my $critical_found 		= 0;
+	    my $warning_found 		= 0;
+
+	    for my $key2 (sort(keys(%{$data{$key}}))) {
+
+		if($key2 eq 'total_free') {
+		    if ($tfree eq 1) {
+			if ($percent_use eq 1) {
+		    	    $free_string = $total_free_percent."% free";
+			    if ($total_free_percent <= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_free_percent <= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			} else {
+		    	    $free_string = $total_free_mb."MB free";
+			    if ($total_free_mb <= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_free_mb <= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			}
+		    } elsif ($tused eq 1) {
+			if ($percent_use eq 1) {
+		    	    $free_string = $total_used_percent."% used";
+			    if ($total_used_percent >= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_used_percent >= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			} else {
+		    	    $free_string = $total_free_mb."MB used";
+			    if ($total_free_mb >= $critical) {
+				$critical_found = 1;
+				$global_critical = 1;
+			    } elsif ($total_free_mb >= $warning) {
+				$warning_found = 1;
+				$global_warning = 1;
+			    }
+			}
+		    }
+		} 
+
+		# create an gloabl information string that we can use for
+		# when nagios data will go into cacti
+		# once we have finished processing the last element
+
+		# total_used is the last element that is sorted through
+		# if we have found a critical error, exit with nagios
+		# status code here
+		if($key2 eq 'total_used') {
+		    my $status;
+
+		    if ($critical_found eq 1) {
+			$status = 'CRITICAL';
+		    } elsif ($warning_found eq 1) {
+			$status = 'WARNING';
+		    } else {
+			$status = 'OK';
+		    }
+
+		    $global_info_string = $global_info_string."\n$key tablespace $status [";
+		    $global_info_string = $global_info_string.$total_free_mb."MB(free) - ";
+		    $global_info_string = $global_info_string.$total_used_mb."MB(used) - ";
+		    $global_info_string = $global_info_string.$total_size."MB(total)]";
+		    $global_info_string = $global_info_string." ".$free_string;
+		}
+
+	    }
+	}
+    }
+
+    if($global_critical) {
+	&exit("CRITICAL","$global_info_string");
+    } elsif ($global_warning) {
+	&exit("WARNING","$global_info_string");
+    } else {
+	&exit("OK","$global_info_string");
+    }
+    
+}
+
+# main
+if($type eq 'tablespace') {
+    dbconnect;
+    check_tablespace;
+    dbdisconnect;
+} elsif ($type eq 'datafilespace') {
+    dbconnect;
+    check_datafilespace;
+    dbdisconnect;
+} else {
+    usage() and exit(0);
+}
