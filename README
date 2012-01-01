@@ -1,0 +1,19 @@
+Nagios Plugins
+==============
+
+A collection of nagios plugins I've written available for public consumption.
+
+Author: Rene Cunningham
+Email:  rene@compounddata.com
+
+check_storage
+    what: checks mount points for free or used disk
+    how: check_storage -f -p -o / -w 10 -c 5
+
+check_nfs_mounted_export
+    what: checks that a directory is a nfs mount
+    how: check_nfs_mounted_export -m /mnt/nfs/data
+
+check_mythtv_recordings
+    what: checks that a minimum number of recordings is occuring on a mythtv server using mythweb
+    how: check_mythtv_recordings -w 2 -c 1 http://mythtv-server.example.com/mythweb/status
