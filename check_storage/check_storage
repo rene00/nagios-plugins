@@ -1,0 +1,223 @@
+#!/usr/bin/perl -w
+# checks mount points for free disk
+
+use strict;
+use File::Basename;
+use Nagios::Plugin;
+
+my $np = Nagios::Plugin->new(
+    version => '0.1',
+    usage => "usage: %s -[f|u] -[p|m] -o <mount point> -w <value> -c <value>",
+    extra => "
+example: %s -f -m -o / -w 2048 -c 1024
+
+Return CRITICAL if
+o If / has 1024mb or less free
+
+Return WARNING if
+o If / has 2048 or less free
+
+Notes:
+o warning and critical values are in megabytes
+o you cannot specify -p and -m together
+o you cannot specify -u and -f together",
+);
+
+$np->add_arg(
+    spec => 'used|u',
+    help => '-u, --used',
+    required => 0,
+);
+
+$np->add_arg(
+    spec => 'free|f',
+    help => '-f, --free',
+    required => 0,
+);
+
+$np->add_arg(
+    spec => 'warning|w=i',
+    help => '-w, --warning=WARNING',
+    required => 1,
+);
+
+$np->add_arg(
+    spec => 'critical|c=i',
+    help => '-c, --critical=CRITICAL',
+    required => 1,
+);
+
+$np->add_arg(
+    spec => 'percentage|p',
+    help => '-p, --percentage',
+    required => 0,
+);
+
+$np->add_arg(
+    spec => 'megabytes|m',
+    help => '-m, --megabyte',
+    required => 0,
+);
+
+$np->add_arg(
+    spec => 'mountpoint|o=s',
+    help => '-o, --mountpoint=MOUNTPOINT',
+    required => 1,
+);
+
+$np->getopts;
+
+my ($critical,$warning,$mountpoint,$percentage,$megabytes,$totalfree,$totalused) = (
+    scalar($np->opts->critical),
+    scalar($np->opts->warning),
+    scalar($np->opts->mountpoint),
+    scalar($np->opts->percentage),
+    scalar($np->opts->megabytes),
+    scalar($np->opts->free),
+    scalar($np->opts->used),
+);
+
+# need p or m
+if(defined($np->opts->percentage) and defined($np->opts->megabytes)) {
+	die("you cannot specify -p and -m together");
+} elsif (not defined($np->opts->percentage) and not defined($np->opts->megabytes)) {
+    # default to megabytes
+    $megabytes = 1;
+}
+
+# work out if free or used
+if(defined($totalfree) and defined($totalused)) {
+	die("you cannot specify -u and -f together");
+} elsif (not defined($totalfree) and not defined($totalused)) {
+	$totalused = 1;
+}
+
+# Exit with an error if we're not on Linux
+$np->nagios_exit( "UNKNOWN", "only works on Linux" ) unless $^O eq 'linux';
+
+my $command = "df -P -m $mountpoint | tail -n1";
+open( PIPE, "$command|" )
+  or die "Cant run $command : $!\n";
+
+my ( $total, $percent, $used, $free);
+my @line;
+
+while ( my $line = <PIPE> ) {
+    chomp($line);
+
+    # Some machines use LVM which gives us a very larger
+    # mount point in the df output. df then doesnt word wrap
+    # and mixes up my variable assignment.
+
+    # Put all strings into an array
+    # If the the first element doesnt start with a decimal
+    # ignore it and allocate things correctly
+
+    @line = split( /\s+/, $line );
+    if ( $line[0] =~ /^\d*/ ) {
+        $total   = $line[1];
+        $used    = $line[2];
+        $free    = $line[3];
+        $percent = $line[4];
+    }
+    else {
+        $total   = $line[0];
+        $used    = $line[1];
+        $free    = $line[2];
+        $percent = $line[3];
+    }
+
+}
+
+# remove %
+$percent =~ s/%//g;
+
+close(PIPE)
+  or die "Cant close $command : $!\n";
+
+if (defined($totalused)) {
+
+    if ( defined($percentage) ) {
+        if ( $percent >= $critical ) {
+            $np->nagios_exit( "CRITICAL",
+                    "[" 
+                  . $used
+                  . "MB] $percent% used on $mountpoint (>="
+                  . $critical
+                  . "%)\n" );
+        }
+        elsif ( $percent >= $warning ) {
+            $np->nagios_exit( "WARNING",
+                    "[" 
+                  . $used
+                  . "MB] $percent% used on $mountpoint (>="
+                  . $warning
+                  . "%)\n" );
+        }
+        $np->nagios_exit( "OK",
+            "[" . $used . "MB] $percent% used on $mountpoint" );
+    }
+
+    if ( $used >= $critical ) {
+        $np->nagios_exit( "CRITICAL",
+                "[$percent%] " . "$used"
+              . "MB used on $mountpoint (>="
+              . $critical
+              . "MB)\n" );
+    }
+    elsif ( $used >= $warning ) {
+        $np->nagios_exit( "WARNING",
+                "[$percent%] " . "$used"
+              . "MB used on $mountpoint (>="
+              . $warning
+              . "MB)\n" );
+    }
+
+    $np->nagios_exit( "OK",
+        "[$percent%] " . "$used" . "MB used on $mountpoint\n" );
+
+}
+elsif ( defined($totalfree) ) {
+
+    # invert $percent to get free
+    $percent = 100 - $percent;
+
+    if ( $percentage eq 1 ) {
+        if ( $percent <= $critical ) {
+            $np->nagios_exit( "CRITICAL",
+                    "[" 
+                  . $free
+                  . "MB] $percent% free on $mountpoint (<="
+                  . $critical
+                  . "%)\n" );
+        }
+        elsif ( $percent <= $warning ) {
+            $np->nagios_exit( "WARNING",
+                    "[" 
+                  . $free
+                  . "MB] $percent% free on $mountpoint (<="
+                  . $warning
+                  . "%)\n" );
+        }
+        $np->nagios_exit( "OK",
+            "[" . $free . "MB] $percent% free on $mountpoint" );
+    }
+
+    if ( $free <= $critical ) {
+        $np->nagios_exit( "CRITICAL",
+                "[$percent%] " . "$free"
+              . "MB free on $mountpoint (<="
+              . $critical
+              . "MB)\n" );
+    }
+    elsif ( $free <= $warning ) {
+        $np->nagios_exit( "WARNING",
+                "[$percent%] " . "$free"
+              . "MB free on $mountpoint (<="
+              . $warning
+              . "MB)\n" );
+    }
+
+    $np->nagios_exit( "OK",
+        "[$percent%] " . "$free" . "MB free on $mountpoint\n" );
+}
