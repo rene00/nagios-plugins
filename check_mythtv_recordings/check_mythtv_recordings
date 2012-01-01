@@ -1,0 +1,62 @@
+#!/usr/bin/perl -w
+use strict;
+use Nagios::Plugin;
+use File::Find;
+use POSIX;
+
+my %data; $data{'critical'} = 0; $data{'warning'} = 0;
+my $number_of_current_recordings = 0;
+
+my $np = Nagios::Plugin->new(version 	=> '0.1',
+			    usage	=> 'Usage: %s -w [min recordings] '.
+						       '-c [min recordings] '.
+							'-u [mythweb url]');
+
+$np->add_arg(
+    spec => 'warning|w=i',
+    help => '-w, --warning=RECORDINGS',
+    required => 1,
+);
+
+$np->add_arg(
+    spec => 'critical|c=i',
+    help => '-c, --critical=RECORDINGS',
+    required => 1,
+);
+
+$np->add_arg(
+    spec => 'url|u=s',
+    help => '-u, --url=URL',
+    required => 1,
+);
+
+$np->getopts;
+my ($critical,$warning,$url) = (
+					scalar($np->opts->critical),
+					scalar($np->opts->warning),
+					scalar($np->opts->url)
+					);
+
+sub process_mythweb {
+	my $cmd = 'w3m -dump '.$np->opts->url.' 2>/dev/null| grep ^Encoder | grep -v status';
+	my @output = `$cmd`;
+	for (@output) {
+		$number_of_current_recordings++ if $_ =~ /and is recording \'/;
+	}
+
+	if ($number_of_current_recordings < $critical) {
+		$np->nagios_exit('CRITICAL',"There are $number_of_current_recordings".
+			" when there should be >=".$critical.
+			" [$number_of_current_recordings]");
+	} elsif($number_of_current_recordings < $warning) {
+		$np->nagios_exit('WARNING',"There are $number_of_current_recordings".
+			" when there should be >=".$warning.
+			" [$number_of_current_recordings]");
+	} 
+
+	$np->nagios_exit('OK',"Number of current recordings [".
+						$number_of_current_recordings.
+						"]");
+}
+
+process_mythweb;
