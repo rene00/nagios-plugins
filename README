@@ -29,3 +29,8 @@ check_asterisk_output - unmaintained
 check_file_sum
     what: checks the md5sum or sha1sum of a file.
     how: check_file_sum -T md5sum -f /bin/grep -s 1fdf5243f351e0a575895bac893b71ab
+
+check_file_directory_age
+    what: checks the size and mtime of the newest file in a directory
+    why: because you may want to monitor files in a backup directory
+    how: check_file_directory_age -d /data/backups/server.example.com/var/lib/mysql -p ibdata1  -c 86400 -s 1024
