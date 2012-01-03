@@ -53,7 +53,7 @@ $np->getopts;
 $np->nagios_exit("UNKNOWN", "only works on Linux") unless $^O eq 'linux';
 
 # exit if cant find file
-$np->nagios_exit("UNKNOWN", "cant find ".scalar($np-opts->file)) if not -f $np->opts->file;
+$np->nagios_exit("UNKNOWN", "cant find ".scalar($np->opts->file)) if not -f $np->opts->file;
 
 # exit if cant find sum binaries
 $np->nagios_exit("UNKNOWN", "cant find $bin_md5sum") if not -x $bin_md5sum;
